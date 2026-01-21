@@ -1,45 +1,42 @@
 {
-	"info": {
-		"_postman_id": "67b02750-3ba3-424a-b382-c825f9ac7200",
-		"name": "calc_field",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-		"_exporter_id": "46281659",
-		"_collection_link": "https://yousef-8658148.postman.co/workspace/yousef's-Workspace~d4840907-88e4-40cc-854a-e5877ff5da87/collection/46281659-67b02750-3ba3-424a-b382-c825f9ac7200?action=share&source=collection_link&creator=46281659"
-	},
-	"item": [
-		{
-			"name": "http://127.0.0.1:8000/colorize_dem",
-			"request": {
-				"auth": {
-					"type": "noauth"
-				},
-				"method": "POST",
-				"header": [],
-				"body": {
-					"mode": "raw",
-					"raw": "{\"workspace\":\"tiger\",\r\n\"layername\":\"poly_landmarks\",\r\n\"expression\":\"!LANAME! + ' is big area' if !LAND! > 50 else !LANAME! + ' is small'\"\r\n,\"target_field\":\"test\"\r\n}",
-					"options": {
-						"raw": {
-							"language": "json"
-						}
-					}
-				},
-				"url": {
-					"raw": "http://0.0.0.0:9091/field_calculator",
-					"protocol": "http",
-					"host": [
-						"0",
-						"0",
-						"0",
-						"0"
-					],
-					"port": "9091",
-					"path": [
-						"field_calculator"
-					]
-				}
-			},
-			"response": []
-		}
-	]
+  "info": {
+    "_postman_id": "67b02750-3ba3-424a-b382-c825f9ac7200",
+    "name": "calc_field",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "46281659",
+    "_collection_link": "https://go.postman.co/collection/46281659-67b02750-3ba3-424a-b382-c825f9ac7200?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "New Request",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"workspace\":\"field_calc\",\r\n\"layername\":\"hello_test1\",\r\n\"store_name\":\"field_calc\",\r\n\"expression\":\"!Weather!+!Zip_Code!\"\r\n,\"target_field\":\"testing\"\r\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://0.0.0.0:9091/field_calculator",
+          "protocol": "http",
+          "host": [
+            "0",
+            "0",
+            "0",
+            "0"
+          ],
+          "port": "9091",
+          "path": [
+            "field_calculator"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
 }
