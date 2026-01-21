@@ -4,9 +4,9 @@ from abc import ABC, abstractmethod
 from simpleeval import simple_eval
 from pandas.api.types import is_numeric_dtype
 import os
-import zipfile
 import requests
 from dotenv import load_dotenv
+from sqlalchemy import create_engine
 
 load_dotenv()
 class CalcStrategy(ABC):
@@ -60,7 +60,7 @@ class SpatialStrategy(CalcStrategy):
                     method_name = part.split('(')[0]
                     arg_str = part[part.find("(")+1:part.find(")")]
                     args = [float(x.strip()) for x in arg_str.split(',')] if arg_str else []
-                    result = getattr(result, method_name)(*args) 
+                    result = getattr(result, method_name)(*args)
                 else:
                     result = getattr(result, part)
             
@@ -76,6 +76,7 @@ class LogicStrategy(CalcStrategy):
     def __init__(self):
         self.functions={"UPPER":lambda x: str(x).upper(),
                                "LOWER":lambda x: str(x).lower(),
+                               "BUFFER":lambda geom,dist: geom.buffer(dist),
                                }
     def execute(self, expression: str,gdf: gpd.GeoDataFrame,target_field: str):
         fields = re.findall(r'!(.*?)!', expression)
@@ -134,7 +135,13 @@ class FieldCalculator:
         self.gdf=gdf
         self.expression=expression
         self.target_field=target_field
-    def calculate(self):
+        self.db_port=os.getenv('DB_PORT')
+        self.db_host=os.getenv('DB_HOST')
+        self.db_name=os.getenv('DB_NAME')
+        self.db_user=os.getenv('DB_USER')
+        self.db_password=os.getenv('DB_PASSWORD')
+        
+    def calculate(self,layer_name):
         """
         Parses the expression and executes the strategy.
         
@@ -147,7 +154,9 @@ class FieldCalculator:
         try:
             strategy=ExpressionParser.get_strategy(self.expression)
             gdf=strategy.execute(expression=self.expression,gdf=self.gdf,target_field=self.target_field)
-            return gdf
+            engine=create_engine(f"postgresql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}")
+            gdf.to_postgis(layer_name,engine,if_exists='replace')
+         
         except Exception as e:
             raise ValueError(f"FieldCalculator failed to calculate field '{self.target_field}': {e}")
 
@@ -161,6 +170,11 @@ class GeoserverCalcField:
         self.username = os.getenv('GEOSERVER_USERNAME')
         self.password = os.getenv('GEOSERVER_PASSWORD')
         self.geoserver_url = os.getenv('GEOSERVER_URL')
+        self.db_port=os.getenv('DB_PORT')
+        self.db_host=os.getenv('DB_HOST')
+        self.db_name=os.getenv('DB_NAME')
+        self.db_user=os.getenv('DB_USER')
+        self.db_password=os.getenv('DB_PASSWORD')
     def get_vector_layer(self, workspace, layername):
         """Retrieves the WFS URL for a vector layer.
 
@@ -174,63 +188,29 @@ class GeoserverCalcField:
         url = (f"{self.geoserver_url}/{workspace}/ows?service=WFS&version=1.0.0&request=GetFeature"
                f"&typeName={workspace}:{layername}&outputFormat=application/json")
         return url
-    def create_zipfilepath(self, tmpdir) :
-        """Creates the file path for a temporary zip file.
+    
+    def update_datastore(self,workspace,datastore,layername):
+        """Updates the datastore in GeoServer to reflect changes in the database.
 
-        :param tmpdir: The path of the temporary folder.
-        :type tmpdir: str
-        :returns: The path of the zip file to be created.
-        :rtype: str
-        """
-        zip_file_path = os.path.join(tmpdir, "output.zip")
-        return zip_file_path
-    def zip_files(self, zip_file_path, tempdir):
-        """Zips shapefiles from a temporary directory into a single zip file.
-      
-        The process includes standard shapefile components: .shp, .shx, .dbf, .prj, and .cpg.
-
-        :param zip_file_path: The full path for the output zip file.
-        :type zip_file_path: str
-        :param tempdir: The path of the temporary directory containing the shapefiles.
-        :type tempdir: str
-        :raises ValueError: If an error occurs during the zipping process.
-        """
-        try:
-            with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for root, _, files in os.walk(tempdir):
-                    for file in files:
-                        if file.split('.')[-1] in ['shp', 'shx', 'dbf', 'prj', 'cpg']:
-                            file_path = os.path.join(root, file)
-                            zf.write(file_path, os.path.basename(file_path))
-        except Exception as e:
-            raise TimeoutError(f'cannot zip the files: {e}') from e
-    def upload_shapefile(self, workspace, layername, zip_path):
-        """Uploads a zipped shapefile to GeoServer.
-       
         :param workspace: The name of the GeoServer workspace.
         :type workspace: str
-        :param datastore: The name of the datastore that will contain the shapefile.
+        :param datastore: The name of the datastore to update.
         :type datastore: str
-        :param zip_path: The path of the zip file to upload.
-        :type zip_path: str
-        :raises ValueError: If an error occurs during the upload process.
-        :returns: The HTTP response from the GeoServer REST API.
-        :rtype: requests.Response
+        :param layername: The name of the layer associated with the datastore.
+        :type layername: str
         """
+        url = f"{self.geoserver_url}/rest/workspaces/{workspace}/datastores/{datastore}/featuretypes/{layername}/reset"
         try:
-            url = (f"{self.geoserver_url}/rest/workspaces/"
-                   f"{workspace}/datastores/{layername}/file.shp")
-            with open(zip_path, "rb") as f:
-                headers = {"Content-type": "application/zip"}
-                response = requests.put(
-                    url,
-                    data=f,
-                    auth=(self.username, self.password),
-                    headers=headers,
-                    params={"update": "overwrite"},
-                    timeout=30.0
-                )
-            return response.status_code
+            response = requests.post(
+                url,
+                auth=(self.username, self.password),
+                headers={"Accept": "application/json"} 
+            )
+            if response.status_code == 200:
+                print(f"Successfully reset cache for: {layername}")
+            else:
+                print(f"Failed to reset. Status code: {response.status_code}")
+                print(f"Response: {response.text}")
         except Exception as e:
-            raise ValueError(f'cannot upload the shapefile: {e},{response.content}') from e
-         
+            raise ValueError(f"An error occurred: {e}")
+            
