@@ -1,7 +1,6 @@
 import re
 import geopandas as gpd
 from abc import ABC, abstractmethod
-from simpleeval import simple_eval
 from pandas.api.types import is_numeric_dtype
 import numpy as np
 import os
@@ -9,7 +8,7 @@ import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 
-
+load_dotenv()
 
 class CalcStrategy(ABC):
     """ every engine should implement this interface """
@@ -192,6 +191,7 @@ class GeoserverCalcField:
             if response.status_code == 200:
                 data = response.json()
                 store_name = data['featureType']['store']['name']
+                print(f'store_name: {store_name}')
                 store_name=store_name.split(':')[1]
             return store_name   
         except Exception as e:
@@ -215,6 +215,7 @@ class GeoserverCalcField:
             if response.status_code == 200:
                 print(f"Successfully reset cache for: {layername}")
             else:
+                print(f"Failed to reset cache for: {data_store}")
                 print(f"Failed to reset. Status code: {response.status_code}")
                 print(f"Response: {response.text}")
         except Exception as e:
@@ -222,13 +223,13 @@ class GeoserverCalcField:
                     
         
 # test expressions 
-# expression={
-#     "strategy":"conditional"
-#     ,"rules":[
-#         {"if":"Weather_Description=='NO ADVERSE CONDITIONS'","then": "true"}
-#         ,{"if":"Weather_Description=='CLEAR'","then": "hello"}
-#         ],"else":"false"
-# }
+expression={
+    "strategy":"logic"
+    ,"rules":[
+        {"if":"Weather_Description=='NO ADVERSE CONDITIONS'","then": "safe"},
+        {"if":"Weather_Description=='CLEAR'","then": "hello12"}
+        ],"else":"false12"
+}
 
 # expression={
 #   "strategy": "vector",
@@ -241,8 +242,8 @@ class GeoserverCalcField:
 #     { "method": "centroid" }
 #   ]}        
 # test run
-# geoserver=GeoserverCalcField()
-# layer_url=geoserver.get_vector_layer(workspace="topp",layername="states")
-# calculator=FieldCalculator(payload=expression,target_field="newfield",url=layer_url)
-# calculator.calculate(layer_name="states")
-# geoserver.update_datastore(workspace="topp",layername="states")
+geoserver=GeoserverCalcField()
+layer_url=geoserver.get_vector_layer(workspace="field_calc",layername="hello_test1")
+calculator=FieldCalculator(payload=expression,target_field="newfield",url=layer_url)
+calculator.calculate(layer_name="hello_test1")
+geoserver.update_datastore(workspace="field_calc",layername="hello_test1")
