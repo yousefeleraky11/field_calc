@@ -1,5 +1,6 @@
 import re
 import geopandas as gpd
+import pandas as pd
 from abc import ABC, abstractmethod
 from pandas.api.types import is_numeric_dtype
 import numpy as np
@@ -23,14 +24,13 @@ class SpatialStrategy(CalcStrategy):
     Supports: Properties, Methods, Static Args, and Dynamic Column Args.
     """
     def execute(self, payload: dict, gdf: gpd.GeoDataFrame, target_field: str):
-    
         result = gdf.geometry
         for operation in payload.get('operations', []):
             method_name = operation['method']
-            raw_args = operation.get('args', [])
-            kwargs = operation.get('kwargs', {}) 
+            args = operation.get('args', [])
+            kwargs = operation.get('kwargs', {})
             resolved_args = []
-            for arg in raw_args:
+            for arg in args:
                 if isinstance(arg, str) and arg.startswith("!") and arg.endswith("!"):
                     col_name = arg.replace("!", "")
                     if col_name not in gdf.columns:
@@ -46,8 +46,9 @@ class SpatialStrategy(CalcStrategy):
             else:
                 result = attr
         gdf[target_field] = result
-        if isinstance(result, (gpd.GeoSeries, gpd.GeoDataFrame)):
-             gdf.set_geometry(target_field, inplace=True)
+        # if isinstance(result, (gpd.GeoSeries, gpd.GeoDataFrame)):
+        #      gdf.set_geometry(target_field, inplace=True)
+        #      gdf.drop(columns=['geometry'], inplace=True)
 
         return gdf
 class LogicStrategy(CalcStrategy):
@@ -56,7 +57,7 @@ class LogicStrategy(CalcStrategy):
     """
     def execute(self, payload: dict, gdf: gpd.GeoDataFrame, target_field: str):
         rules = payload.get("rules", [])
-        default_val = payload.get("else", None)
+        default_val = payload.get("else")
 
         if not rules:
             raise ValueError("Logic strategy requires a 'rules' list.")
@@ -65,18 +66,21 @@ class LogicStrategy(CalcStrategy):
         try:
             for rule in rules:
                 condition_str = rule.get("if")
+                fields = re.findall(r'!(.*?)!', condition_str)
+                for field in fields:
+                    if field not in gdf.columns:
+                        raise ValueError(f"Field {field} not found in GeoDataFrame.")
+                clean_expr = condition_str.replace('!', '`')
                 result_val = rule.get("then")
-                mask = gdf.eval(condition_str)
+                mask = gdf.eval(clean_expr)
                 conditions.append(mask)
                 choices.append(result_val)
             gdf[target_field] = np.select(conditions, choices, default=default_val)
             return gdf
-
         except Exception as e:
-            raise ValueError(f"Rule Engine failed: {e}")
+            raise ValueError(f"Rule Engine failed: {e}")from e
 class VectorStrategy(CalcStrategy):
     """JOB: High-speed numerical math using C-optimized pandas/numexpr."""
-    
     def execute(self,payload: dict, gdf: gpd.GeoDataFrame, target_field: str):
         expression = payload.get("expression", "")
         try:
@@ -86,13 +90,52 @@ class VectorStrategy(CalcStrategy):
                     raise ValueError(f"Field {field} not found in GeoDataFrame.")
                 if not is_numeric_dtype(gdf[field]):
                     raise ValueError(f"Field {field} is not numeric.")
-            clean_expr = expression.replace('!', '').replace('[', '').replace(']', '')
+            clean_expr = expression.replace('!', '`')
             gdf[target_field]=gdf.eval(clean_expr,engine='numexpr')
             return gdf
         except ZeroDivisionError:
-            raise ValueError("Division by zero detected in expression.")
+            raise ValueError("Division by zero detected in expression.")from ZeroDivisionError
         except Exception as e:
-            raise ValueError(f"VectorStrategy failed to execute expression '{expression}': {e}")  
+            raise ValueError(
+                f"VectorStrategy failed to execute expression '{expression}': {e}") from e
+class StringStrategy(CalcStrategy):
+    """JOB: Handle string concatenation and manipulation via JSON."""
+    def execute(self, payload: dict, gdf: gpd.GeoDataFrame, target_field: str):
+       
+        try:
+            column_a = payload.get("col_A")
+            if column_a in gdf.columns:
+                column_a=gdf[column_a].astype(str)
+            column_b = payload.get("col_B")
+            if column_b in gdf.columns:
+                column_b=gdf[column_b].astype(str)
+            sep=payload.get("separator", " ")
+            
+            gdf[target_field] = column_a + sep + column_b
+            return gdf
+        except Exception as e:
+            raise ValueError(f"StringStrategy failed to execute expression '{payload}': {e}") from e
+class DateStrategy(CalcStrategy):
+    """JOB: Handle date manipulations via JSON."""
+    def execute(self, payload: dict, gdf: gpd.GeoDataFrame, target_field: str):
+        # Placeholder for date manipulation logic
+        try:
+            date_column = payload.get("date_col")
+            series = gdf[date_column]
+            operation = payload.get("operation")
+            if operation == "extract_year":
+                gdf[target_field] = pd.to_datetime(series, errors='coerce').dt.year
+            elif operation == "extract_month":
+                gdf[target_field] = pd.to_datetime(series, errors='coerce').dt.month
+            elif operation == "extract_day":
+                gdf[target_field] = pd.to_datetime(series, errors='coerce').dt.day
+            elif operation =="to_date":
+                date=payload.get("date")
+                time_diff= pd.to_datetime(series, format='mixed') - pd.to_datetime(date)
+                gdf[target_field]= time_diff.dt.days
+            return gdf    
+        except Exception as e:
+            raise ValueError(f"DateStrategy failed to execute expression '{payload}': {e}")from e         
 class ExpressionParser:
     """
     Utility class to route expressions to the appropriate calculation strategy.
@@ -110,6 +153,12 @@ class ExpressionParser:
                 return LogicStrategy()
             elif strategy_type == "vector":
                 return VectorStrategy()
+            elif strategy_type == "string":
+                return StringStrategy()
+            elif strategy_type == "date":
+                return DateStrategy()
+            else:
+                raise ValueError(f"Unknown strategy type: {strategy_type}")
         except Exception as e:
             raise ValueError(f"ExpressionParser failed to determine strategy for expression '{strategy_type}': {e}")
 
@@ -147,15 +196,23 @@ class FieldCalculator:
         """
         try:
             gdf=gpd.read_file(self.url)
+            for col in gdf.columns:
+                if " " in col:
+                    new_col = col.replace(" ", "_")
+                    gdf.rename(columns={col: new_col}, inplace=True)
             strategy=ExpressionParser.get_strategy(self.payload)
             gdf=strategy.execute(payload=self.payload,gdf=gdf,target_field=self.target_field)
             engine=create_engine(f"postgresql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}")
             gdf.to_postgis(layer_name,engine,if_exists='replace')
+            return gdf
          
         except Exception as e:
             raise ValueError(f"FieldCalculator failed to calculate field '{self.target_field}': {e}")
 
 class GeoserverCalcField:
+    """
+    Facade class for calculating field values using GeoServer.
+    """
     def __init__(self):
         """Initializes the Geoserver client.
 
@@ -184,16 +241,25 @@ class GeoserverCalcField:
                f"&typeName={workspace}:{layername}&outputFormat=application/json")
         return url
     def get_store_name(self,workspace, layer_name):
+        """Retrieves the datastore name for a given layer in GeoServer.
+
+        :param workspace: The name of the GeoServer workspace.
+        :type workspace: str
+        :param layer_name: The name of the layer associated with the datastore.
+        :type layer_name: str
+        :returns: The name of the datastore associated with the layer.
+        :rtype: str
+        """
         info_url = f"{self.geoserver_url}/rest/workspaces/{workspace}/featuretypes/{layer_name}.json"
         auth = (self.username, self.password)
         try:
-            response = requests.get(info_url, auth=auth)
+            response = requests.get(info_url, auth=auth,timeout=60)
             if response.status_code == 200:
                 data = response.json()
                 store_name = data['featureType']['store']['name']
                 print(f'store_name: {store_name}')
                 store_name=store_name.split(':')[1]
-            return store_name   
+            return store_name
         except Exception as e:
             print(f"An error occurred: {e}")
     def update_datastore(self,workspace,layername):
@@ -210,7 +276,8 @@ class GeoserverCalcField:
             response = requests.post(
                 url,
                 auth=(self.username, self.password),
-                headers={"Accept": "application/json"} 
+                headers={"Accept": "application/json"},
+                timeout=60
             )
             if response.status_code == 200:
                 print(f"Successfully reset cache for: {layername}")
@@ -219,31 +286,42 @@ class GeoserverCalcField:
                 print(f"Failed to reset. Status code: {response.status_code}")
                 print(f"Response: {response.text}")
         except Exception as e:
-            raise ValueError(f"An error occurred: {e}")
+            raise ValueError(f"An error occurred: {e}") from e
                     
         
-# test expressions 
+
 expression={
     "strategy":"logic"
     ,"rules":[
-        {"if":"Weather_Description=='NO ADVERSE CONDITIONS'","then": "safe"},
-        {"if":"Weather_Description=='CLEAR'","then": "hello12"}
+        {"if":"Accident_Number<0","then": "safe"},
+        
         ],"else":"false12"
 }
-
 # expression={
-#   "strategy": "vector",
-#   "expression": "Number_of_Injuries * 2"
+#     "strategy":"date",
+#     "operation":"to_date",
+#     "date_col":"Date_and_Time",
+#     "date":"2018-01-01"
 # }
+expression={
+  "strategy": "vector",
+  "expression": "Accident_Number * 24"
+}
+expression={
+  "strategy": "spatial",
+  "operations": [
+    {"method": "buffer", "kwargs": { "distance": 0.5  }}]}
 # expression={
-#   "strategy": "spatial",
-#   "operations": [
-#     { "method": "buffer", "params": { "distance": 0.5 } },
-#     { "method": "centroid" }
-#   ]}        
-# test run
+#   "strategy": "string",
+#   "method": "concat",
+#   "col_A": "Weather_Description",
+#   "col_B": "1234",
+#   "separator": " - "
+# }
+# #   ]}        
+# # test run
 geoserver=GeoserverCalcField()
 layer_url=geoserver.get_vector_layer(workspace="field_calc",layername="hello_test1")
-calculator=FieldCalculator(payload=expression,target_field="newfield",url=layer_url)
+calculator=FieldCalculator(payload=expression,target_field="newfield1",url=layer_url)
 calculator.calculate(layer_name="hello_test1")
 geoserver.update_datastore(workspace="field_calc",layername="hello_test1")
